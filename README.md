@@ -15,3 +15,5 @@ for questions regarding JaCoCo which are not already covered by the
 
 Note: We do not answer general questions in the project's issue tracker. Please use our [mailing list](https://groups.google.com/forum/?fromgroups=#!forum/jacoco) for this.
 -------------------------------------------------------------------------
+
+Azure DevOps is Amazing!
