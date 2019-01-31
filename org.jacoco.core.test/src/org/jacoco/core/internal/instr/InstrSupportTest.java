@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2017 Mountainminds GmbH & Co. KG and Contributors
+ * Copyright (c) 2009, 2019 Mountainminds GmbH & Co. KG and Contributors
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * which accompanies this distribution, and is available at
@@ -11,10 +11,19 @@
  *******************************************************************************/
 package org.jacoco.core.internal.instr;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.util.Printer;
 import org.objectweb.asm.util.Textifier;
 import org.objectweb.asm.util.TraceMethodVisitor;
@@ -27,6 +36,9 @@ public class InstrSupportTest {
 	private Printer printer;
 	private TraceMethodVisitor trace;
 
+	@Rule
+	public ExpectedException exception = ExpectedException.none();
+
 	@Before
 	public void setup() {
 		printer = new Textifier();
@@ -34,17 +46,79 @@ public class InstrSupportTest {
 	}
 
 	@Test
-	public void testAssertNotIntrumentedPositive() {
+	public void classReaderFor_should_read_java_13_class() {
+		final byte[] bytes = createJava13Class();
+
+		final ClassReader classReader = InstrSupport.classReaderFor(bytes);
+
+		classReader.accept(new ClassVisitor(InstrSupport.ASM_API_VERSION) {
+			@Override
+			public void visit(final int version, final int access,
+					final String name, final String signature,
+					final String superName, final String[] interfaces) {
+				assertEquals(Opcodes.V12 + 1, version);
+			}
+		}, 0);
+
+		assertArrayEquals(createJava13Class(), bytes);
+	}
+
+	private static byte[] createJava13Class() {
+		final ClassWriter cw = new ClassWriter(0);
+		cw.visit(Opcodes.V12 + 1, 0, "Foo", null, "java/lang/Object", null);
+		cw.visitEnd();
+		cw.toByteArray();
+		return cw.toByteArray();
+	}
+
+	@Test
+	public void getVersionMajor_should_return_major_version_number() {
+		final byte[] bytes = new byte[] { (byte) 0xCA, (byte) 0xFE, (byte) 0xBA,
+				(byte) 0xBE, /* minor */ 0x00, 0x03, /* major */ 0x00, 0x2D };
+		assertEquals(45, InstrSupport.getVersionMajor(bytes));
+	}
+
+	@Test
+	public void needFrames_should_return_false_for_versions_less_than_1_6() {
+		assertFalse(InstrSupport.needsFrames(Opcodes.V1_1));
+		assertFalse(InstrSupport.needsFrames(Opcodes.V1_2));
+		assertFalse(InstrSupport.needsFrames(Opcodes.V1_3));
+		assertFalse(InstrSupport.needsFrames(Opcodes.V1_4));
+		assertFalse(InstrSupport.needsFrames(Opcodes.V1_5));
+	}
+
+	@Test
+	public void needFrames_should_return_true_for_versions_greater_than_or_equal_to_1_6() {
+		assertTrue(InstrSupport.needsFrames(Opcodes.V1_6));
+		assertTrue(InstrSupport.needsFrames(Opcodes.V1_7));
+		assertTrue(InstrSupport.needsFrames(Opcodes.V1_8));
+		assertTrue(InstrSupport.needsFrames(Opcodes.V9));
+		assertTrue(InstrSupport.needsFrames(Opcodes.V10));
+		assertTrue(InstrSupport.needsFrames(Opcodes.V11));
+		assertTrue(InstrSupport.needsFrames(Opcodes.V12));
+		assertTrue(InstrSupport.needsFrames(Opcodes.V12 + 1));
+	}
+
+	@Test
+	public void assertNotIntrumented_should_accept_non_jacoco_memebers() {
 		InstrSupport.assertNotInstrumented("run", "Foo");
 	}
 
-	@Test(expected = IllegalStateException.class)
-	public void testAssertNotIntrumentedField() {
+	@Test
+	public void assertNotIntrumented_should_throw_exception_when_jacoco_data_field_is_present() {
+		exception.expect(IllegalStateException.class);
+		exception.expectMessage(
+				"Cannot process instrumented class Foo. Please supply original non-instrumented classes.");
+
 		InstrSupport.assertNotInstrumented("$jacocoData", "Foo");
 	}
 
-	@Test(expected = IllegalStateException.class)
-	public void testAssertNotIntrumentedMethod() {
+	@Test
+	public void assertNotIntrumented_should_throw_exception_when_jacoco_init_method_is_present() {
+		exception.expect(IllegalStateException.class);
+		exception.expectMessage(
+				"Cannot process instrumented class Foo. Please supply original non-instrumented classes.");
+
 		InstrSupport.assertNotInstrumented("$jacocoInit", "Foo");
 	}
 

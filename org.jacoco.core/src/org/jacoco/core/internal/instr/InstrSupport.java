@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2017 Mountainminds GmbH & Co. KG and Contributors
+ * Copyright (c) 2009, 2019 Mountainminds GmbH & Co. KG and Contributors
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * which accompanies this distribution, and is available at
@@ -13,6 +13,7 @@ package org.jacoco.core.internal.instr;
 
 import static java.lang.String.format;
 
+import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
@@ -25,7 +26,7 @@ public final class InstrSupport {
 	}
 
 	/** ASM API version */
-	public static final int ASM_API_VERSION = Opcodes.ASM5;
+	public static final int ASM_API_VERSION = Opcodes.ASM7;
 
 	// === Data Field ===
 
@@ -157,6 +158,32 @@ public final class InstrSupport {
 	 */
 	static final int CLINIT_ACC = Opcodes.ACC_SYNTHETIC | Opcodes.ACC_STATIC;
 
+	private static final int MAJOR_VERSION_INDEX = 6;
+
+	/**
+	 * Gets major of bytecode version number from given bytes of class.
+	 *
+	 * @param b
+	 *            bytes of class
+	 * @return version of bytecode
+	 */
+	public static int getVersionMajor(final byte[] b) {
+		return (short) (((b[MAJOR_VERSION_INDEX] & 0xFF) << 8)
+				| (b[MAJOR_VERSION_INDEX + 1] & 0xFF));
+	}
+
+	/**
+	 * Determines whether the given class file version requires stackmap frames.
+	 * 
+	 * @param version
+	 *            class file version
+	 * @return <code>true</code> if frames are required
+	 */
+	public static boolean needsFrames(final int version) {
+		// consider major version only (due to 1.1 anomaly)
+		return (version & 0xff) >= Opcodes.V1_6;
+	}
+
 	/**
 	 * Ensures that the given member does not correspond to a internal member
 	 * created by the instrumentation process. This would mean that the class is
@@ -174,7 +201,8 @@ public final class InstrSupport {
 			final String owner) throws IllegalStateException {
 		if (member.equals(DATAFIELD_NAME) || member.equals(INITMETHOD_NAME)) {
 			throw new IllegalStateException(format(
-					"Class %s is already instrumented.", owner));
+					"Cannot process instrumented class %s. Please supply original non-instrumented classes.",
+					owner));
 		}
 	}
 
@@ -198,6 +226,27 @@ public final class InstrSupport {
 		} else {
 			mv.visitLdcInsn(Integer.valueOf(value));
 		}
+	}
+
+	/**
+	 * Creates a {@link ClassReader} instance for given bytes of class even if
+	 * its version not yet supported by ASM.
+	 *
+	 * @param b
+	 *            bytes of class
+	 * @return {@link ClassReader}
+	 */
+	public static ClassReader classReaderFor(final byte[] b) {
+		final byte[] originalVersion = new byte[] { b[4], b[5], b[6], b[7] };
+		if (getVersionMajor(b) == Opcodes.V12 + 1) {
+			b[4] = (byte) (Opcodes.V12 >>> 24);
+			b[5] = (byte) (Opcodes.V12 >>> 16);
+			b[6] = (byte) (Opcodes.V12 >>> 8);
+			b[7] = (byte) Opcodes.V12;
+		}
+		final ClassReader classReader = new ClassReader(b);
+		System.arraycopy(originalVersion, 0, b, 4, originalVersion.length);
+		return classReader;
 	}
 
 }

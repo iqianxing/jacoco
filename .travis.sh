@@ -9,6 +9,18 @@ then
   exit 1
 fi
 
+function jdk_switcher {
+  DIR=$1
+  if [ ! -d "$DIR" ]; then
+    echo "Not found: $DIR"
+    exit 1
+  fi
+  export JAVA_HOME="$DIR"
+  export JDK_HOME="${JAVA_HOME}"
+  export JAVAC="${JAVA_HOME}/bin/javac"
+  export PATH="${JAVA_HOME}/bin:${PATH}"
+}
+
 # Switch to desired JDK, download if required:
 function install_jdk {
   JDK_URL=$1
@@ -27,33 +39,32 @@ function install_jdk {
 
   if [ -z "${2+false}" ]
   then
-    export JAVA_HOME="/tmp/jdk/$JDK"
-    export JDK_HOME="${JAVA_HOME}"
-    export JAVAC="${JAVA_HOME}/bin/javac"
-    export PATH="${JAVA_HOME}/bin:${PATH}"
+    jdk_switcher "/tmp/jdk/$JDK"
   fi
 }
 
-source $HOME/.jdk_switcher_rc
+# Preinstalled JDKs:
+ls -lA /usr/lib/jvm/
+
+
 case "$JDK" in
 5)
-  jdk_switcher use oraclejdk8
   install_jdk $JDK5_URL false
   ;;
-6)
-  jdk_switcher use openjdk6
+6 | 7 | 8)
+  jdk_switcher /usr/lib/jvm/java-8-oracle
   ;;
-7|8)
-  jdk_switcher use oraclejdk${JDK}
+9)
+  jdk_switcher /usr/lib/jvm/java-9-oracle
   ;;
-8-ea)
-  install_jdk $JDK8_EA_URL
+10)
+  install_jdk $JDK10_URL
   ;;
-9-ea)
-  install_jdk $JDK9_EA_URL
+11)
+  install_jdk $JDK11_URL
   ;;
-9-ea-stable)
-  install_jdk $JDK9_EA_STABLE_URL
+12-ea)
+  install_jdk $JDK12_EA_URL
   ;;
 esac
 
@@ -63,31 +74,32 @@ esac
 export MAVEN_SKIP_RC=true
 
 # Build:
-# TODO(Godin): see https://github.com/jacoco/jacoco/issues/300 about "bytecode.version"
 case "$JDK" in
 5)
   if [[ ${TRAVIS_PULL_REQUEST} == 'false' && ${TRAVIS_BRANCH} == 'master' ]]
   then
+    # Travis does shallow clone, but SonarQube performs "git blame" and so requires full history
+    git fetch --unshallow
+
     # goal "deploy:deploy" used directly instead of "deploy" phase to avoid pollution of Maven repository by "install" phase
-    mvn -V -B -e -f org.jacoco.build verify sonar:sonar deploy:deploy -DdeployAtEnd -Djdk.version=1.5 --toolchains=./.travis/toolchains.xml --settings=./.travis/settings.xml -Dsonar.host.url=${SONARQUBE_URL} -Dsonar.login=${SONARQUBE_TOKEN}
+    mvn -V -B -e -f org.jacoco.build verify sonar:sonar deploy:deploy -DdeployAtEnd -Djdk.version=5 --toolchains=./.travis/toolchains.xml --settings=./.travis/settings.xml -Dsonar.host.url=${SONARQUBE_URL} -Dsonar.login=${SONARQUBE_TOKEN}
     python ./.travis/trigger-site-deployment.py
   else
-    mvn -V -B -e verify -Djdk.version=1.5 --toolchains=./.travis/toolchains.xml
+    mvn -V -B -e verify -Djdk.version=5 --toolchains=./.travis/toolchains.xml \
+      --settings=./.travis/settings.xml
   fi
   ;;
-6)
-  mvn -V -B -e verify -Dbytecode.version=1.6
+6 | 7 | 8 | 9)
+  mvn -V -B -e verify -Djdk.version=${JDK} -Dbytecode.version=${JDK} -Decj=${ECJ:-} --toolchains=./.travis/travis-toolchains.xml \
+    --settings=./.travis/settings.xml
   ;;
-7)
-  mvn -V -B -e verify -Dbytecode.version=1.7
+10 | 11)
+  mvn -V -B -e verify -Dbytecode.version=${JDK} \
+    --settings=./.travis/settings.xml
   ;;
-8 | 8-ea)
-  mvn -V -B -e verify -Dbytecode.version=1.8 -Decj=${ECJ:-}
-  ;;
-9-ea | 9-ea-stable)
-  # see https://bugs.openjdk.java.net/browse/JDK-8131041 about "java.locale.providers"
-  mvn -V -B -e verify -Dbytecode.version=1.9 \
-    -DargLine=-Djava.locale.providers=JRE,SPI
+12-ea)
+  mvn -V -B -e verify -Dbytecode.version=12 \
+    --settings=./.travis/settings.xml
   ;;
 *)
   echo "Incorrect JDK [$JDK]"

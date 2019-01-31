@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2017 Mountainminds GmbH & Co. KG and Contributors
+ * Copyright (c) 2009, 2019 Mountainminds GmbH & Co. KG and Contributors
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * which accompanies this distribution, and is available at
@@ -11,25 +11,7 @@
  *******************************************************************************/
 package org.jacoco.core.internal.analysis;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-
-import org.jacoco.core.analysis.ICounter;
-import org.jacoco.core.analysis.IMethodCoverage;
-import org.jacoco.core.analysis.ISourceNode;
-import org.jacoco.core.internal.analysis.filter.EnumFilter;
-import org.jacoco.core.internal.analysis.filter.IFilter;
-import org.jacoco.core.internal.analysis.filter.IFilterOutput;
-import org.jacoco.core.internal.analysis.filter.LombokGeneratedFilter;
-import org.jacoco.core.internal.analysis.filter.PrivateEmptyNoArgConstructorFilter;
-import org.jacoco.core.internal.analysis.filter.SynchronizedFilter;
-import org.jacoco.core.internal.analysis.filter.SyntheticFilter;
-import org.jacoco.core.internal.analysis.filter.TryWithResourcesEcjFilter;
-import org.jacoco.core.internal.analysis.filter.TryWithResourcesJavacFilter;
 import org.jacoco.core.internal.flow.IFrame;
-import org.jacoco.core.internal.flow.Instruction;
 import org.jacoco.core.internal.flow.LabelInfo;
 import org.jacoco.core.internal.flow.MethodProbesVisitor;
 import org.objectweb.asm.Handle;
@@ -40,95 +22,27 @@ import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TryCatchBlockNode;
 
 /**
- * A {@link MethodProbesVisitor} that analyzes which statements and branches of
- * a method have been executed based on given probe data.
+ * A {@link MethodProbesVisitor} that builds the {@link Instruction}s of a
+ * method to calculate the detailed execution status.
  */
-public class MethodAnalyzer extends MethodProbesVisitor
-		implements IFilterOutput {
+public class MethodAnalyzer extends MethodProbesVisitor {
 
-	private static final IFilter[] FILTERS = new IFilter[] { new EnumFilter(),
-			new SyntheticFilter(), new SynchronizedFilter(),
-			new TryWithResourcesJavacFilter(), new TryWithResourcesEcjFilter(),
-			new PrivateEmptyNoArgConstructorFilter(), new LombokGeneratedFilter() };
+	private final InstructionsBuilder builder;
 
-	private final String className;
-
-	private final String superClassName;
-
-	private final boolean[] probes;
-
-	private final MethodCoverageImpl coverage;
-
-	private int currentLine = ISourceNode.UNKNOWN_LINE;
-
-	private int firstLine = ISourceNode.UNKNOWN_LINE;
-
-	private int lastLine = ISourceNode.UNKNOWN_LINE;
-
-	// Due to ASM issue #315745 there can be more than one label per instruction
-	private final List<Label> currentLabel = new ArrayList<Label>(2);
-
-	/** List of all analyzed instructions */
-	private final List<Instruction> instructions = new ArrayList<Instruction>();
-
-	/** List of all predecessors of covered probes */
-	private final List<Instruction> coveredProbes = new ArrayList<Instruction>();
-
-	/** List of all jumps encountered */
-	private final List<Jump> jumps = new ArrayList<Jump>();
-
-	/** Last instruction in byte code sequence */
-	private Instruction lastInsn;
+	/** Current node of the ASM tree API */
+	private AbstractInsnNode currentNode;
 
 	/**
-	 * New Method analyzer for the given probe data.
-	 * 
-	 * @param className
-	 *            class name
-	 * @param superClassName
-	 *            superclass name
-	 * @param name
-	 *            method name
-	 * @param desc
-	 *            method descriptor
-	 * @param signature
-	 *            optional parameterized signature
-	 * 
-	 * @param probes
-	 *            recorded probe date of the containing class or
-	 *            <code>null</code> if the class is not executed at all
+	 * New instance that uses the given builder.
 	 */
-	public MethodAnalyzer(final String className, final String superClassName,
-			final String name, final String desc, final String signature,
-			final boolean[] probes) {
-		super();
-		this.className = className;
-		this.superClassName = superClassName;
-		this.probes = probes;
-		this.coverage = new MethodCoverageImpl(name, desc, signature);
+	MethodAnalyzer(final InstructionsBuilder builder) {
+		this.builder = builder;
 	}
 
-	/**
-	 * Returns the coverage data for this method after this visitor has been
-	 * processed.
-	 * 
-	 * @return coverage data for this method
-	 */
-	public IMethodCoverage getCoverage() {
-		return coverage;
-	}
-
-	/**
-	 * {@link MethodNode#accept(MethodVisitor)}
-	 */
 	@Override
 	public void accept(final MethodNode methodNode,
 			final MethodVisitor methodVisitor) {
-		this.ignored.clear();
-		for (final IFilter filter : FILTERS) {
-			filter.filter(className, superClassName, methodNode, this);
-		}
-
+		methodVisitor.visitCode();
 		for (final TryCatchBlockNode n : methodNode.tryCatchBlocks) {
 			n.accept(methodVisitor);
 		}
@@ -140,105 +54,68 @@ public class MethodAnalyzer extends MethodProbesVisitor
 		methodVisitor.visitEnd();
 	}
 
-	private final Set<AbstractInsnNode> ignored = new HashSet<AbstractInsnNode>();
-	private AbstractInsnNode currentNode;
-
-	public void ignore(final AbstractInsnNode fromInclusive,
-			final AbstractInsnNode toInclusive) {
-		for (AbstractInsnNode i = fromInclusive; i != toInclusive; i = i
-				.getNext()) {
-			ignored.add(i);
-		}
-		ignored.add(toInclusive);
-	}
-
 	@Override
 	public void visitLabel(final Label label) {
-		currentLabel.add(label);
-		if (!LabelInfo.isSuccessor(label)) {
-			lastInsn = null;
-		}
+		builder.addLabel(label);
 	}
 
 	@Override
 	public void visitLineNumber(final int line, final Label start) {
-		currentLine = line;
-		if (firstLine > line || lastLine == ISourceNode.UNKNOWN_LINE) {
-			firstLine = line;
-		}
-		if (lastLine < line) {
-			lastLine = line;
-		}
-	}
-
-	private void visitInsn() {
-		final Instruction insn = new Instruction(currentNode, currentLine);
-		instructions.add(insn);
-		if (lastInsn != null) {
-			insn.setPredecessor(lastInsn);
-		}
-		final int labelCount = currentLabel.size();
-		if (labelCount > 0) {
-			for (int i = labelCount; --i >= 0;) {
-				LabelInfo.setInstruction(currentLabel.get(i), insn);
-			}
-			currentLabel.clear();
-		}
-		lastInsn = insn;
+		builder.setCurrentLine(line);
 	}
 
 	@Override
 	public void visitInsn(final int opcode) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 	}
 
 	@Override
 	public void visitIntInsn(final int opcode, final int operand) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 	}
 
 	@Override
 	public void visitVarInsn(final int opcode, final int var) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 	}
 
 	@Override
 	public void visitTypeInsn(final int opcode, final String type) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 	}
 
 	@Override
 	public void visitFieldInsn(final int opcode, final String owner,
 			final String name, final String desc) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 	}
 
 	@Override
 	public void visitMethodInsn(final int opcode, final String owner,
 			final String name, final String desc, final boolean itf) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 	}
 
 	@Override
 	public void visitInvokeDynamicInsn(final String name, final String desc,
 			final Handle bsm, final Object... bsmArgs) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 	}
 
 	@Override
 	public void visitJumpInsn(final int opcode, final Label label) {
-		visitInsn();
-		jumps.add(new Jump(lastInsn, label));
+		builder.addInstruction(currentNode);
+		builder.addJump(label, 1);
 	}
 
 	@Override
 	public void visitLdcInsn(final Object cst) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 	}
 
 	@Override
 	public void visitIincInsn(final int var, final int increment) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 	}
 
 	@Override
@@ -254,13 +131,15 @@ public class MethodAnalyzer extends MethodProbesVisitor
 	}
 
 	private void visitSwitchInsn(final Label dflt, final Label[] labels) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 		LabelInfo.resetDone(labels);
-		jumps.add(new Jump(lastInsn, dflt));
+		int branch = 0;
+		builder.addJump(dflt, branch);
 		LabelInfo.setDone(dflt);
 		for (final Label l : labels) {
 			if (!LabelInfo.isDone(l)) {
-				jumps.add(new Jump(lastInsn, l));
+				branch++;
+				builder.addJump(l, branch);
 				LabelInfo.setDone(l);
 			}
 		}
@@ -268,26 +147,26 @@ public class MethodAnalyzer extends MethodProbesVisitor
 
 	@Override
 	public void visitMultiANewArrayInsn(final String desc, final int dims) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 	}
 
 	@Override
 	public void visitProbe(final int probeId) {
-		addProbe(probeId);
-		lastInsn = null;
+		builder.addProbe(probeId, 0);
+		builder.noSuccessor();
 	}
 
 	@Override
 	public void visitJumpInsnWithProbe(final int opcode, final Label label,
 			final int probeId, final IFrame frame) {
-		visitInsn();
-		addProbe(probeId);
+		builder.addInstruction(currentNode);
+		builder.addProbe(probeId, 1);
 	}
 
 	@Override
 	public void visitInsnWithProbe(final int opcode, final int probeId) {
-		visitInsn();
-		addProbe(probeId);
+		builder.addInstruction(currentNode);
+		builder.addProbe(probeId, 0);
 	}
 
 	@Override
@@ -304,71 +183,26 @@ public class MethodAnalyzer extends MethodProbesVisitor
 
 	private void visitSwitchInsnWithProbes(final Label dflt,
 			final Label[] labels) {
-		visitInsn();
+		builder.addInstruction(currentNode);
 		LabelInfo.resetDone(dflt);
 		LabelInfo.resetDone(labels);
-		visitSwitchTarget(dflt);
+		int branch = 0;
+		visitSwitchTarget(dflt, branch);
 		for (final Label l : labels) {
-			visitSwitchTarget(l);
+			branch++;
+			visitSwitchTarget(l, branch);
 		}
 	}
 
-	private void visitSwitchTarget(final Label label) {
+	private void visitSwitchTarget(final Label label, final int branch) {
 		final int id = LabelInfo.getProbeId(label);
 		if (!LabelInfo.isDone(label)) {
 			if (id == LabelInfo.NO_PROBE) {
-				jumps.add(new Jump(lastInsn, label));
+				builder.addJump(label, branch);
 			} else {
-				addProbe(id);
+				builder.addProbe(id, branch);
 			}
 			LabelInfo.setDone(label);
-		}
-	}
-
-	@Override
-	public void visitEnd() {
-		// Wire jumps:
-		for (final Jump j : jumps) {
-			LabelInfo.getInstruction(j.target).setPredecessor(j.source);
-		}
-		// Propagate probe values:
-		for (final Instruction p : coveredProbes) {
-			p.setCovered();
-		}
-		// Report result:
-		coverage.ensureCapacity(firstLine, lastLine);
-		for (final Instruction i : instructions) {
-			if (ignored.contains(i.getNode())) {
-				continue;
-			}
-
-			final int total = i.getBranches();
-			final int covered = i.getCoveredBranches();
-			final ICounter instrCounter = covered == 0 ? CounterImpl.COUNTER_1_0
-					: CounterImpl.COUNTER_0_1;
-			final ICounter branchCounter = total > 1
-					? CounterImpl.getInstance(total - covered, covered)
-					: CounterImpl.COUNTER_0_0;
-			coverage.increment(instrCounter, branchCounter, i.getLine());
-		}
-		coverage.incrementMethodCounter();
-	}
-
-	private void addProbe(final int probeId) {
-		lastInsn.addBranch();
-		if (probes != null && probes[probeId]) {
-			coveredProbes.add(lastInsn);
-		}
-	}
-
-	private static class Jump {
-
-		final Instruction source;
-		final Label target;
-
-		Jump(final Instruction source, final Label target) {
-			this.source = source;
-			this.target = target;
 		}
 	}
 
